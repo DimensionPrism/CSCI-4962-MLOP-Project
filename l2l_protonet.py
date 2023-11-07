@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import pdb
 import argparse
 import numpy as np
 
@@ -12,11 +13,46 @@ import learn2learn as l2l
 from learn2learn.data.transforms import NWays, KShots, LoadData, RemapLabels
 
 
-def pairwise_distances_logits(a, b):
+def pairwise_distances_logits(a, b, metric='euclidean', eps=1e-8):
     n = a.shape[0]
     m = b.shape[0]
-    logits = -((a.unsqueeze(1).expand(n, m, -1) -
-                b.unsqueeze(0).expand(n, m, -1))**2).sum(dim=2)
+    a_expanded = a.unsqueeze(1).expand(n, m, -1)
+    b_expanded = b.unsqueeze(0).expand(n, m, -1)
+    
+    if metric == "euclidean":
+        logits = -((a_expanded - b_expanded)**2).sum(dim=2)
+    if metric == "mahalanobis":
+        diff = a_expanded - b_expanded
+        covariance_matrix = torch.cov(b.T)
+        covariance_matrix += torch.eye(covariance_matrix.size(0)).cuda()
+        inv_covariance_matrix = torch.linalg.inv(covariance_matrix)
+        logits = -torch.einsum('ijk,kl,ijl->ij', diff, inv_covariance_matrix, diff)
+    if metric == 'itakura_saito':
+        a_expanded = a_expanded.add(eps)
+        b_expanded = b_expanded.add(eps)
+        
+        ratio = torch.clamp(a_expanded / b_expanded, min=0.1, max=10)
+        
+        itakura_saito_dist = ratio - torch.log(ratio) - 1
+        logits = -itakura_saito_dist.sum(dim=2)
+        
+        max_logit = torch.max(logits, dim=1, keepdim=True)[0]
+        logits = logits - max_logit
+    if metric == 'generalized_i_divergence':
+        a_expanded = a_expanded.add(eps)
+        b_expanded = b_expanded.add(eps)
+        
+        log_ratio = torch.log(a_expanded / b_expanded)
+        divergence = a_expanded * log_ratio - (a_expanded - b_expanded)
+        logits = -divergence.sum(dim=2)
+    if metric == "kl_divergence":
+        a_expanded = a_expanded.add(eps)
+        b_expanded = b_expanded.add(eps)
+        
+        # Compute the KL divergence
+        # KL(P || Q) = sum(P(x) * log(P(x)/Q(x)))
+        kl_div = a_expanded * torch.log2(a_expanded / b_expanded)
+        logits = -kl_div.sum(dim=2)
     return logits
 
 
@@ -41,9 +77,7 @@ class Convnet(nn.Module):
         return x.view(x.size(0), -1)
 
 
-def fast_adapt(model, batch, ways, shot, query_num, metric=None, device=None):
-    if metric is None:
-        metric = pairwise_distances_logits
+def fast_adapt(model, batch, ways, shot, query_num, metric='euclidean', device=None):
     if device is None:
         device = model.device()
     data, labels = batch
@@ -69,8 +103,8 @@ def fast_adapt(model, batch, ways, shot, query_num, metric=None, device=None):
     support = support.reshape(ways, shot, -1).mean(dim=1)
     query = embeddings[query_indices]
     labels = labels[query_indices].long()
-
-    logits = pairwise_distances_logits(query, support)
+    
+    logits = pairwise_distances_logits(query, support, metric=metric)
     loss = F.cross_entropy(logits, labels)
     acc = accuracy(logits, labels)
     return loss, acc
@@ -86,6 +120,7 @@ if __name__ == '__main__':
     parser.add_argument('--train-query', type=int, default=15)
     parser.add_argument('--train-way', type=int, default=30)
     parser.add_argument('--gpu', default=0)
+    parser.add_argument('--metric', type=str, default='euclidean')
     args = parser.parse_args()
     print(args)
 
@@ -163,7 +198,7 @@ if __name__ == '__main__':
                                    args.train_way,
                                    args.shot,
                                    args.train_query,
-                                   metric=pairwise_distances_logits,
+                                   metric=args.metric,
                                    device=device)
 
             loss_ctr += 1
@@ -189,7 +224,7 @@ if __name__ == '__main__':
                                    args.test_way,
                                    args.test_shot,
                                    args.test_query,
-                                   metric=pairwise_distances_logits,
+                                   metric=args.metric,
                                    device=device)
 
             loss_ctr += 1
@@ -208,7 +243,7 @@ if __name__ == '__main__':
                                args.test_way,
                                args.test_shot,
                                args.test_query,
-                               metric=pairwise_distances_logits,
+                               metric=args.metric,
                                device=device)
         loss_ctr += 1
         n_acc += acc
