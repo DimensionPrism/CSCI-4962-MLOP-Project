@@ -133,7 +133,7 @@ if __name__ == '__main__':
     model = Convnet()
     model.to(device)
 
-    path_data = '~/data'
+    path_data = './data'
     train_dataset = l2l.vision.datasets.MiniImagenet(
         root=path_data, mode='train', download=True)
     valid_dataset = l2l.vision.datasets.MiniImagenet(
@@ -247,6 +247,5 @@ if __name__ == '__main__':
                                device=device)
         loss_ctr += 1
         n_acc += acc
-        print('batch {}: {:.2f}({:.2f})'.format(
-            i, n_acc/loss_ctr * 100, acc * 100))
+    print('Test Accuracy: {:.2f}'.format(n_acc/loss_ctr * 100))
         
