@@ -62,7 +62,6 @@ def accuracy(predictions, targets):
 
 
 class Convnet(nn.Module):
-
     def __init__(self, x_dim=3, hid_dim=64, z_dim=64):
         super().__init__()
         self.encoder = l2l.vision.models.CNN4Backbone(
@@ -77,13 +76,45 @@ class Convnet(nn.Module):
         return x.view(x.size(0), -1)
 
 
+class ViTEncoder(nn.Module):
+    def __init__(self, image_size=84, patch_size=4, embedding_dim=1024, num_heads=4, num_layers=1, hidden_dim=1024, flatten_channels=True):
+        super(ViTEncoder, self).__init__()
+        self.image_size = image_size
+        self.patch_size = patch_size
+        self.num_patches = int((image_size / patch_size)**2)
+        self.embedding_dim = embedding_dim
+        self.flatten_channels = flatten_channels
+
+        self.linear_projection = nn.Linear(self.patch_size * self.patch_size * 3, self.embedding_dim)
+
+        encoder_layers = nn.TransformerEncoderLayer(d_model=self.embedding_dim, nhead=num_heads, dim_feedforward=hidden_dim, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
+        self.avg_pool = nn.AdaptiveAvgPool1d(8)
+        self.classifier = nn.Linear(self.embedding_dim * 8, self.embedding_dim)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        x = x.reshape(B, C, H // self.patch_size, self.patch_size, W // self.patch_size, self.patch_size)
+        x = x.permute(0, 2, 4, 1, 3, 5)  # [B, H', W', C, p_H, p_W]
+        x = x.flatten(1, 2)  # [B, H'*W', C, p_H, p_W]
+        if self.flatten_channels:
+            x = x.flatten(2, 4)  # [B, H'*W', C*p_H*p_W]
+        x = self.linear_projection(x)
+        x = self.transformer_encoder(x)
+        x = x.transpose(1, 2)
+        x = self.avg_pool(x)
+        x = x.transpose(1, 2)
+
+        x = x.flatten(1)
+        x = self.classifier(x)
+        return x
+
 def fast_adapt(model, batch, ways, shot, query_num, metric='euclidean', device=None):
     if device is None:
         device = model.device()
     data, labels = batch
     data = data.to(device)
     labels = labels.to(device)
-    n_items = shot * ways
 
     # Sort data samples by labels
     # TODO: Can this be replaced by ConsecutiveLabels ?
@@ -113,6 +144,7 @@ def fast_adapt(model, batch, ways, shot, query_num, metric='euclidean', device=N
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--max-epoch', type=int, default=250)
+    parser.add_argument('--model', type=str, default='cnn')
     parser.add_argument('--shot', type=int, default=1)
     parser.add_argument('--test-way', type=int, default=5)
     parser.add_argument('--test-shot', type=int, default=1)
@@ -130,7 +162,10 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(43)
         device = torch.device('cuda')
 
-    model = Convnet()
+    if args.model == 'cnn':
+        model = Convnet()
+    elif args.model == 'transformer':
+        model = ViTEncoder()
     model.to(device)
 
     path_data = './data'
